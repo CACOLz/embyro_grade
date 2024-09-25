@@ -1,0 +1,13 @@
+streamlit
+torch
+torchvision
+transformers
+scikit-learn
+pillow
+pandas
+opencv-python
+scikit-image
+matplotlib
+seaborn
+joblib
+scipy
