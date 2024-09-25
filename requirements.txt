@@ -5,7 +5,8 @@ transformers
 scikit-learn
 pillow
 pandas
-opencv-python
+## opencv-python
+opencv-python-headless
 scikit-image
 matplotlib
 seaborn
