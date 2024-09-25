@@ -7,7 +7,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import joblib
 from scipy.stats import entropy
-from transformers import ViTForImageClassification, ViTFeatureExtractor, ViTConfig
+from transformers import ViTForImageClassification, ViTImageProcessor, ViTConfig
 import cv2
 from skimage import measure
 import os
@@ -41,8 +41,9 @@ def load_models():
         st.error(f"Scaler 파일을 찾을 수 없습니다: '{SCALER_PATH}'")
         return None, None, None, None, None
 
-    # Load Inception-v3 model with aux_logits=True
-    inception_model = models.inception_v3(pretrained=True, aux_logits=True)
+    # Load Inception-v3 model with weights
+    inception_weights = models.Inception_V3_Weights.IMAGENET1K_V1
+    inception_model = models.inception_v3(weights=inception_weights, aux_logits=True)
     inception_model.fc = torch.nn.Identity()
     inception_model.AuxLogits = torch.nn.Identity()
     inception_model.to(DEVICE)
@@ -59,7 +60,7 @@ def load_models():
     model_vit.eval()
 
     # Load Feature Extractor for ViT
-    feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224')
+    feature_extractor = ViTImageProcessor.from_pretrained('google/vit-base-patch16-224')
 
     # Load RandomForestClassifier and Scaler
     rf_classifier = joblib.load(RANDOM_FOREST_MODEL_PATH)
@@ -184,7 +185,7 @@ def extract_vit_features(image, model_vit, feature_extractor, device):
     Parameters:
         image (PIL.Image): 이미지 객체.
         model_vit (transformers.ViTForImageClassification): ViT 모델.
-        feature_extractor (transformers.ViTFeatureExtractor): ViT 특징 추출기.
+        feature_extractor (transformers.ViTImageProcessor): ViT 특징 추출기.
         device (torch.device): 디바이스.
     
     Returns:
