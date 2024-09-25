@@ -1,4 +1,4 @@
-import os
+import streamlit as st
 import torch
 from torchvision import models, transforms
 from PIL import Image
@@ -6,79 +6,75 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import joblib
-import warnings
-from scipy.stats import entropy  # 엔트로피 함수 임포트
-
-# Suppress warnings for cleaner output
-warnings.filterwarnings("ignore")
+from scipy.stats import entropy
+from transformers import ViTForImageClassification, ViTFeatureExtractor, ViTConfig
+import cv2
+from skimage import measure
+import os
 
 # ------------------------ Configuration ------------------------
 
-# 프로젝트 폴더 내에서 모델 파일 경로 설정
+# 현재 파일의 디렉토리 경로 얻기
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Path to the saved RandomForestClassifier and Scaler
 RANDOM_FOREST_MODEL_PATH = os.path.join(BASE_DIR, 'random_forest_model.pkl')
 SCALER_PATH = os.path.join(BASE_DIR, 'scaler.pkl')
 
-# Define image size for InceptionV3
-IMG_SIZE = (299, 299)
-
-# Path to the directory containing new blastocyst images
-NEW_IMAGE_DIR = r"C:\Users\vince\Downloads\viability"  # 이 부분은 여전히 절대 경로입니다. 배포 환경에서는 상대 경로로 변경 필요
-
-# Path to save the classification results
-RESULTS_CSV_PATH = os.path.join(NEW_IMAGE_DIR, 'classification_results.csv')
-
-# Probability threshold for marking images for review
-PROB_THRESHOLD = 0.4  # 임계값 설정 (0.4으로 변경)
-
-# Entropy threshold for marking images for review
-ENTROPY_THRESHOLD = 1.4  # 엔트로피 임계값 설정 (1.4으로 변경)
+# Probability and Entropy thresholds
+PROB_THRESHOLD = 0.4
+ENTROPY_THRESHOLD = 1.4
 
 # Device configuration
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ------------------------ Load Models ------------------------
 
-# Check if model files exist
-if not os.path.exists(RANDOM_FOREST_MODEL_PATH):
-    raise FileNotFoundError(f"RandomForestClassifier 모델을 찾을 수 없습니다: '{RANDOM_FOREST_MODEL_PATH}'")
-if not os.path.exists(SCALER_PATH):
-    raise FileNotFoundError(f"Scaler 파일을 찾을 수 없습니다: '{SCALER_PATH}'")
+@st.cache_resource
+def load_models():
+    # Check if model files exist
+    if not os.path.exists(RANDOM_FOREST_MODEL_PATH):
+        st.error(f"RandomForestClassifier 모델을 찾을 수 없습니다: '{RANDOM_FOREST_MODEL_PATH}'")
+        return None, None, None, None, None
+    
+    if not os.path.exists(SCALER_PATH):
+        st.error(f"Scaler 파일을 찾을 수 없습니다: '{SCALER_PATH}'")
+        return None, None, None, None, None
 
-# Load Inception-v3 model with aux_logits=True
-inception_model = models.inception_v3(pretrained=True, aux_logits=True)
-# Remove the final fully connected layer
-inception_model.fc = torch.nn.Identity()
-# Remove the auxiliary logits
-inception_model.AuxLogits = torch.nn.Identity()
-inception_model.to(DEVICE)
-inception_model.eval()
+    # Load Inception-v3 model with aux_logits=True
+    inception_model = models.inception_v3(pretrained=True, aux_logits=True)
+    inception_model.fc = torch.nn.Identity()
+    inception_model.AuxLogits = torch.nn.Identity()
+    inception_model.to(DEVICE)
+    inception_model.eval()
 
-# Load ViT 모델
-from transformers import ViTForImageClassification, ViTFeatureExtractor, ViTConfig
+    # Load ViT 모델
+    config = ViTConfig.from_pretrained('google/vit-base-patch16-224', num_labels=5)
+    model_vit = ViTForImageClassification.from_pretrained(
+        'google/vit-base-patch16-224',
+        config=config,
+        ignore_mismatched_sizes=True
+    )
+    model_vit.to(DEVICE)
+    model_vit.eval()
 
-config = ViTConfig.from_pretrained('google/vit-base-patch16-224', num_labels=5)
-model_vit = ViTForImageClassification.from_pretrained(
-    'google/vit-base-patch16-224',
-    config=config,
-    ignore_mismatched_sizes=True  # 크기 불일치 무시
-)
-model_vit.to(DEVICE)
-model_vit.eval()
+    # Load Feature Extractor for ViT
+    feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224')
 
-# Load Feature Extractor for ViT
-feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224')
+    # Load RandomForestClassifier and Scaler
+    rf_classifier = joblib.load(RANDOM_FOREST_MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
 
-# Load RandomForestClassifier and Scaler
-with open(RANDOM_FOREST_MODEL_PATH, 'rb') as f:
-    rf_classifier = joblib.load(f)
+    return inception_model, model_vit, feature_extractor, rf_classifier, scaler
 
-with open(SCALER_PATH, 'rb') as f:
-    scaler = joblib.load(f)
+# Load models
+inception_model, model_vit, feature_extractor, rf_classifier, scaler = load_models()
+
+if inception_model is None or model_vit is None or feature_extractor is None or rf_classifier is None or scaler is None:
+    st.stop()
 
 # ------------------------ Define Transforms ------------------------
 
-# Define the image transformations: resize, center crop, to tensor, normalize
 preprocess_inception = transforms.Compose([
     transforms.Resize(299),
     transforms.CenterCrop(299),
@@ -91,26 +87,23 @@ preprocess_inception = transforms.Compose([
 
 # ------------------------ Helper Functions ------------------------
 
-import cv2
-from skimage import measure
-
-def extract_morphological_features(image_path):
+def extract_morphological_features(image):
     """
     이미지에서 형태학적 특징을 추출합니다.
     
     Parameters:
-        image_path (str): 이미지 파일 경로.
+        image (PIL.Image): 이미지 객체.
     
     Returns:
         list: [blastocyst_area, icm_area, circularity, blastocyst_density, perimeter_to_area_ratio]
     """
-    # 이미지 로드
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"이미지를 로드할 수 없습니다: {image_path}")
+    # PIL 이미지를 OpenCV 형식으로 변환
+    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    if image_cv is None:
+        st.warning("이미지를 로드할 수 없습니다.")
         return [0, 0, 0, 0, 0]
     # 그레이스케일 변환
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
     # 이진화
     _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
@@ -150,12 +143,12 @@ def extract_morphological_features(image_path):
         # 객체가 없을 경우 0으로 채움
         return [0, 0, 0, 0, 0]
 
-def extract_inception_features(image_path, model, preprocess, device):
+def extract_inception_features(image, model, preprocess, device):
     """
     InceptionV3를 사용하여 이미지에서 딥러닝 특징을 추출합니다.
     
     Parameters:
-        image_path (str): 이미지 파일 경로.
+        image (PIL.Image): 이미지 객체.
         model (torch.nn.Module): InceptionV3 모델.
         preprocess (torchvision.transforms.Compose): 전처리 변환.
         device (torch.device): 디바이스.
@@ -163,7 +156,6 @@ def extract_inception_features(image_path, model, preprocess, device):
     Returns:
         np.ndarray: 추출된 특징 벡터.
     """
-    image = Image.open(image_path).convert('RGB')
     input_tensor = preprocess(image)
     input_batch = input_tensor.unsqueeze(0).to(device)  # 배치 차원 추가 및 디바이스 이동
 
@@ -185,12 +177,12 @@ def extract_inception_features(image_path, model, preprocess, device):
     else:
         return np.array([])
 
-def extract_vit_features(image_path, model_vit, feature_extractor, device):
+def extract_vit_features(image, model_vit, feature_extractor, device):
     """
     ViT를 사용하여 이미지에서 딥러닝 특징을 추출합니다.
     
     Parameters:
-        image_path (str): 이미지 파일 경로.
+        image (PIL.Image): 이미지 객체.
         model_vit (transformers.ViTForImageClassification): ViT 모델.
         feature_extractor (transformers.ViTFeatureExtractor): ViT 특징 추출기.
         device (torch.device): 디바이스.
@@ -198,7 +190,6 @@ def extract_vit_features(image_path, model_vit, feature_extractor, device):
     Returns:
         np.ndarray: 추출된 특징 벡터.
     """
-    image = Image.open(image_path).convert('RGB')
     encoding = feature_extractor(images=image, return_tensors='pt')
     input_ids = encoding['pixel_values'].to(device)
 
@@ -210,95 +201,89 @@ def extract_vit_features(image_path, model_vit, feature_extractor, device):
 
     return features
 
-# ------------------------ Classification ------------------------
+# ------------------------ Streamlit App ------------------------
 
-def classify_new_images():
-    """
-    라벨이 없는 새로운 배반포 이미지를 분류하고 결과를 CSV 파일로 저장합니다.
-    
-    Returns:
-        None
-    """
-    # 디렉토리 내의 PNG, JPG, JPEG 파일 목록 가져오기
-    image_files = [f for f in os.listdir(NEW_IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+def main():
+    st.title("Blastocyst Grade Classification")
+    st.write("이미지를 업로드하면 자동으로 Grade를 예측합니다. 불확실한 예측은 검토 대상으로 표시됩니다.")
 
-    if not image_files:
-        print(f"디렉토리에 이미지 파일이 없습니다: {NEW_IMAGE_DIR}")
-        return
+    uploaded_files = st.file_uploader("이미지 파일 업로드", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
-    # 결과를 저장할 리스트 초기화
-    results = []
+    if uploaded_files:
+        results = []
 
-    print(f"총 {len(image_files)}개의 이미지를 찾았습니다. 분류를 시작합니다...")
+        for uploaded_file in uploaded_files:
+            image = Image.open(uploaded_file).convert('RGB')
+            st.image(image, caption=f"Uploaded Image: {uploaded_file.name}", use_column_width=True)
 
-    for idx, img_file in enumerate(image_files):
-        img_path = os.path.join(NEW_IMAGE_DIR, img_file)
-        
-        if idx % 100 == 0 and idx != 0:
-            print(f"처리 중: {idx}/{len(image_files)}")
+            # 1. 형태학적 특징 추출
+            morph_features = extract_morphological_features(image)
 
-        # 1. 형태학적 특징 추출
-        morph_features = extract_morphological_features(img_path)
+            # 2. InceptionV3 특징 추출
+            inception_features = extract_inception_features(image, inception_model, preprocess_inception, DEVICE)
+            if inception_features.size == 0:
+                inception_features = np.zeros(2048)
 
-        # 2. InceptionV3 특징 추출
-        inception_features = extract_inception_features(img_path, inception_model, preprocess_inception, DEVICE)
-        if inception_features.size == 0:
-            # 딥러닝 특징이 추출되지 않은 경우 0으로 채움
-            inception_features = np.zeros(2048)  # InceptionV3의 avgpool 출력 크기 (2048)
+            # 3. ViT 특징 추출
+            vit_features = extract_vit_features(image, model_vit, feature_extractor, DEVICE)
+            if vit_features.size == 0:
+                vit_features = np.zeros(5)
 
-        # 3. ViT 특징 추출
-        vit_features = extract_vit_features(img_path, model_vit, feature_extractor, DEVICE)
-        if vit_features.size == 0:
-            # 딥러닝 특징이 추출되지 않은 경우 0으로 채움
-            vit_features = np.zeros(5)  # ViT의 num_labels=5
+            # 4. 특징 결합
+            combined_features = list(morph_features) + list(inception_features) + list(vit_features)
 
-        # 4. 특징 결합
-        combined_features = list(morph_features) + list(inception_features) + list(vit_features)
+            # 5. 특징 스케일링
+            combined_features_scaled = scaler.transform([combined_features])
 
-        # 5. 특징 스케일링
-        combined_features_scaled = scaler.transform([combined_features])
+            # 6. 예측 클래스 확률
+            probabilities = rf_classifier.predict_proba(combined_features_scaled)[0]
 
-        # 6. 예측 클래스 확률
-        probabilities = rf_classifier.predict_proba(combined_features_scaled)[0]
+            # 7. 예측 클래스
+            predicted_class = rf_classifier.predict(combined_features_scaled)[0]
 
-        # 7. 예측 클래스
-        predicted_class = rf_classifier.predict(combined_features_scaled)[0]
+            # 8. 확률 임계값과 엔트로피 기준에 따라 'Reviewed' 여부 결정
+            max_prob = np.max(probabilities)
+            image_entropy = entropy(probabilities)
+            if max_prob > PROB_THRESHOLD or image_entropy > ENTROPY_THRESHOLD:
+                reviewed = True
+            else:
+                reviewed = False
 
-        # 8. 확률 임계값과 엔트로피 기준에 따라 'Reviewed' 여부 결정
-        max_prob = np.max(probabilities)
-        image_entropy = entropy(probabilities)
-        if max_prob > PROB_THRESHOLD or image_entropy > ENTROPY_THRESHOLD:
-            reviewed = True
-        else:
-            reviewed = False
+            # 9. 결과 저장
+            result = {
+                'Image': uploaded_file.name,
+                'Predicted_Class': predicted_class,
+                'Probability_Class_1': probabilities[0],
+                'Probability_Class_2': probabilities[1],
+                'Probability_Class_3': probabilities[2],
+                'Probability_Class_4': probabilities[3],
+                'Probability_Class_5': probabilities[4],
+                'Entropy': image_entropy,
+                'Reviewed': reviewed
+            }
+            results.append(result)
 
-        # 9. 결과 저장
-        results.append({
-            'Image': img_file,
-            'Predicted_Class': predicted_class,
-            'Probability_Class_1': probabilities[0],
-            'Probability_Class_2': probabilities[1],
-            'Probability_Class_3': probabilities[2],
-            'Probability_Class_4': probabilities[3],
-            'Probability_Class_5': probabilities[4],
-            'Entropy': image_entropy,  # 엔트로피 추가
-            'Reviewed': reviewed  # 검토 필요 여부 추가
-        })
+            # 10. 결과 표시
+            st.markdown(f"**Predicted Class:** {predicted_class}")
+            st.markdown(f"**Probabilities:**")
+            st.write(pd.DataFrame(probabilities.reshape(1, -1), columns=['Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5']))
+            st.markdown(f"**Entropy:** {image_entropy:.2f}")
+            if reviewed:
+                st.warning("🔴 이 이미지는 검토가 필요합니다.")
+            else:
+                st.success("🟢 이 이미지는 정상적으로 분류되었습니다.")
+            st.markdown("---")
 
-        print(f"Classified {img_file}: Class {predicted_class} with probabilities {probabilities}, Entropy: {image_entropy:.2f}, Reviewed: {reviewed}")
-
-    # 10. 결과를 데이터프레임으로 변환
-    results_df = pd.DataFrame(results)
-
-    # 11. CSV 파일로 저장
-    results_df.to_csv(RESULTS_CSV_PATH, index=False)
-    print(f"\n분류가 완료되었습니다. 결과가 '{RESULTS_CSV_PATH}'에 저장되었습니다.")
-
-    # 12. 검토가 필요한 이미지 별도 저장 (옵션)
-    reviewed_df = results_df[results_df['Reviewed'] == True]
-    reviewed_csv_path = os.path.join(NEW_IMAGE_DIR, 'images_for_review.csv')
-    reviewed_df.to_csv(reviewed_csv_path, index=False)
-    print(f"검토가 필요한 이미지가 '{reviewed_csv_path}'에 저장되었습니다.")
+        # 11. 전체 결과를 CSV로 다운로드
+        if st.button("전체 결과 다운로드"):
+            results_df = pd.DataFrame(results)
+            csv = results_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="CSV 파일 다운로드",
+                data=csv,
+                file_name='classification_results.csv',
+                mime='text/csv',
+            )
 
 if __name__ == "__main__":
-    classify_new_images()
+    main()
