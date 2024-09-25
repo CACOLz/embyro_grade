@@ -2,7 +2,7 @@ streamlit
 torch
 torchvision
 transformers
-scikit-learn
+scikit-learn==1.2.2
 pillow
 pandas
 ## opencv-python
