@@ -14,7 +14,7 @@ from skimage import measure
 # ------------------------ Configuration ------------------------
 
 # Path to the saved RandomForestClassifier and Scaler
-MODEL_DIR = r"C:\Users\vince\Documents\my_models"  # 업데이트 필요
+MODEL_DIR = r"C:\Users\Administrator\Documents\embyro_github"  # 업데이트 필요
 RANDOM_FOREST_MODEL_PATH = os.path.join(MODEL_DIR, 'random_forest_model.pkl')
 SCALER_PATH = os.path.join(MODEL_DIR, 'scaler.pkl')
 
