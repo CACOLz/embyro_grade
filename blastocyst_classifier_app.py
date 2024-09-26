@@ -23,7 +23,7 @@ SCALER_PATH = os.path.join(BASE_DIR, 'scaler.pkl')
 
 # Probability and Entropy thresholds
 PROB_THRESHOLD = 0.4
-ENTROPY_THRESHOLD = 1.4
+ENTROPY_THRESHOLD = 0.7
 
 # Device configuration
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -270,9 +270,9 @@ def main():
             st.write(pd.DataFrame(probabilities.reshape(1, -1), columns=['Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5']))
             st.markdown(f"**Entropy:** {image_entropy:.2f}")
             if reviewed:
-                st.warning("🔴 이 이미지는 검토가 필요합니다.")
+                st.warning("🔴 This image needs to be reviewed. 이 이미지는 검토가 필요합니다.")
             else:
-                st.success("🟢 이 이미지는 정상적으로 분류되었습니다.")
+                st.success("🟢 This image has been classified normally. 이 이미지는 정상적으로 분류되었습니다.")
             st.markdown("---")
 
         # 11. 전체 결과를 CSV로 다운로드
