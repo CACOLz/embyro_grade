@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import joblib
-from scipy.stats import entropy
 from transformers import ViTForImageClassification, ViTImageProcessor, ViTConfig
 import cv2
 from skimage import measure
@@ -21,9 +20,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RANDOM_FOREST_MODEL_PATH = os.path.join(BASE_DIR, 'random_forest_model.pkl')
 SCALER_PATH = os.path.join(BASE_DIR, 'scaler.pkl')
 
-# Probability and Entropy thresholds
-PROB_THRESHOLD = 0.4
-ENTROPY_THRESHOLD = 0.7
+# Probability threshold
+PROB_THRESHOLD = 0.6
 
 # Device configuration
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -91,10 +89,10 @@ preprocess_inception = transforms.Compose([
 def extract_morphological_features(image):
     """
     이미지에서 형태학적 특징을 추출합니다.
-    
+
     Parameters:
         image (PIL.Image): 이미지 객체.
-    
+
     Returns:
         list: [blastocyst_area, icm_area, circularity, blastocyst_density, perimeter_to_area_ratio]
     """
@@ -147,13 +145,13 @@ def extract_morphological_features(image):
 def extract_inception_features(image, model, preprocess, device):
     """
     InceptionV3를 사용하여 이미지에서 딥러닝 특징을 추출합니다.
-    
+
     Parameters:
         image (PIL.Image): 이미지 객체.
         model (torch.nn.Module): InceptionV3 모델.
         preprocess (torchvision.transforms.Compose): 전처리 변환.
         device (torch.device): 디바이스.
-    
+
     Returns:
         np.ndarray: 추출된 특징 벡터.
     """
@@ -181,13 +179,13 @@ def extract_inception_features(image, model, preprocess, device):
 def extract_vit_features(image, model_vit, feature_extractor, device):
     """
     ViT를 사용하여 이미지에서 딥러닝 특징을 추출합니다.
-    
+
     Parameters:
         image (PIL.Image): 이미지 객체.
         model_vit (transformers.ViTForImageClassification): ViT 모델.
         feature_extractor (transformers.ViTImageProcessor): ViT 특징 추출기.
         device (torch.device): 디바이스.
-    
+
     Returns:
         np.ndarray: 추출된 특징 벡터.
     """
@@ -242,15 +240,14 @@ def main():
             # 7. 예측 클래스
             predicted_class = rf_classifier.predict(combined_features_scaled)[0]
 
-            # 8. 확률 임계값과 엔트로피 기준에 따라 'Reviewed' 여부 결정
+            # 8. 확률 임계값에 따라 'Reviewed' 여부 결정
             max_prob = np.max(probabilities)
-            image_entropy = entropy(probabilities)
-            if max_prob > PROB_THRESHOLD or image_entropy > ENTROPY_THRESHOLD:
+            if max_prob > PROB_THRESHOLD:
                 reviewed = True
             else:
                 reviewed = False
 
-            # 9. 결과 저장
+            # 9. 결과 저장 (Entropy 제거)
             result = {
                 'Image': uploaded_file.name,
                 'Predicted_Class': predicted_class,
@@ -259,7 +256,6 @@ def main():
                 'Probability_Class_3': probabilities[2],
                 'Probability_Class_4': probabilities[3],
                 'Probability_Class_5': probabilities[4],
-                'Entropy': image_entropy,
                 'Reviewed': reviewed
             }
             results.append(result)
@@ -268,14 +264,13 @@ def main():
             st.markdown(f"**Predicted Class:** {predicted_class}")
             st.markdown(f"**Probabilities:**")
             st.write(pd.DataFrame(probabilities.reshape(1, -1), columns=['Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5']))
-            st.markdown(f"**Entropy:** {image_entropy:.2f}")
             if reviewed:
                 st.warning("🔴 This image needs to be reviewed. 이 이미지는 검토가 필요합니다.")
             else:
                 st.success("🟢 This image has been classified normally. 이 이미지는 정상적으로 분류되었습니다.")
             st.markdown("---")
 
-        # 11. 전체 결과를 CSV로 다운로드
+        # 11. 전체 결과를 CSV로 다운로드 (Entropy 제거)
         if st.button("전체 결과 다운로드"):
             results_df = pd.DataFrame(results)
             csv = results_df.to_csv(index=False).encode('utf-8')
