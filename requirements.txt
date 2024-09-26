@@ -5,10 +5,10 @@ transformers
 scikit-learn==1.1.3
 pillow
 pandas
-## opencv-python
 opencv-python-headless
 scikit-image
 matplotlib
 seaborn
 joblib
-scipy
+murmurhash==1.0.5
+cython==0.29.28
